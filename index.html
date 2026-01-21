@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shared Timer v12 (Fixed PiP Controls)</title>
+    <title>Shared Timer v13 (Fixed Buttons)</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -158,7 +158,7 @@
         const PORT = 8084;
         let client = null, roomID = "", isHost = false;
 
-        // --- APP STATE ---
+        // --- STATE ---
         let targetTime = null;
         let soundEnabled = true;
         let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -234,8 +234,9 @@
             });
         }
 
-        // --- 3. DATA HANDLING ---
-        function publishState() {
+        // --- 3. DATA & FUNCTIONS ---
+        // We make these window functions explicitly so they can be called from anywhere
+        window.publishState = function() {
             if(!isHost || !client || !client.isConnected()) return;
             const msg = new Paho.MQTT.Message(JSON.stringify({ targetTime }));
             msg.destinationName = `timerapp/${roomID}/state`;
@@ -254,23 +255,23 @@
             }
         }
 
-        // --- 4. TIMER LOGIC ---
-        function addTime(min) {
+        // CONTROL FUNCTIONS
+        window.addTime = function(min) {
             if(!isHost) return;
             const now = Date.now();
             const basis = (targetTime && targetTime > now) ? targetTime : now;
             targetTime = basis + (min * 60000);
             hasWarned = false; hasEnded = false;
-            publishState();
+            window.publishState();
             updateDisplay();
         }
 
-        function resetTimer() {
+        window.resetTimer = function() {
             if(!isHost) return;
             targetTime = null;
             hasWarned = false; hasEnded = false;
             applyColor(currentTheme.bg, currentTheme.text);
-            publishState();
+            window.publishState();
             updateDisplay();
         }
 
@@ -292,7 +293,6 @@
                 const m = Math.floor((diff % 3600000) / 60000);
                 const s = Math.floor((diff % 60000) / 1000);
                 displayEl.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                
                 if (!hasWarned) {
                     hasWarned = true;
                     applyColor('var(--warn-bg)', 'var(--warn-text)');
@@ -310,7 +310,7 @@
         }
         setInterval(updateDisplay, 50);
 
-        // --- 5. UTILS ---
+        // --- 4. UTILS ---
         function updateStatus(connected, txt) {
             document.getElementById('status-msg').innerText = txt;
             document.getElementById('conn-dot').style.background = connected ? '#00ff9d' : '#ff4444';
@@ -355,7 +355,8 @@
             osc.connect(gain);
             gain.connect(audioCtx.destination);
             const now = audioCtx.currentTime;
-
+            
+            // Sounds...
             if (type === 'beep') {
                 osc.type = 'sine'; osc.frequency.setValueAtTime(800, now);
                 gain.gain.setValueAtTime(0.1, now); 
@@ -371,7 +372,7 @@
             }
         }
 
-        // --- 6. POP OUT WITH FIXED CONTROLS ---
+        // --- 5. POP OUT (FIXED FOR BUTTONS) ---
         window.togglePiP = async () => {
             if (!window.documentPictureInPicture) return alert("Use Chrome/Edge");
             if (pipWindow) { pipWindow.close(); return; }
@@ -380,7 +381,7 @@
             [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => 
                 pipWindow.document.head.appendChild(el.cloneNode(true)));
 
-            // FIXED CSS: FORCE VISIBILITY & Z-INDEX
+            // CSS for PiP
             const pipStyle = pipWindow.document.createElement('style');
             pipStyle.textContent = `
                 body {
@@ -389,31 +390,27 @@
                     background-color: ${currentTheme.bg};
                 }
                 #time-display { font-size: 40vh !important; }
-                
                 #host-controls {
                     position: fixed; bottom: 0; left: 0; width: 100%;
-                    display: flex !important; /* FORCE SHOW */
-                    justify-content: center; gap: 10px;
-                    padding: 20px;
-                    background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
-                    opacity: 0.2; /* 20% visible by default (not invisible) */
-                    transition: opacity 0.2s;
-                    z-index: 9999; /* Ensure clickability */
+                    display: flex !important; justify-content: center; gap: 10px;
+                    padding: 20px; background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+                    opacity: 0.2; transition: opacity 0.2s; z-index: 9999;
                 }
                 #host-controls:hover { opacity: 1; }
-                
-                #host-controls button {
-                    padding: 8px 15px; font-size: 0.8rem;
-                    border: 1px solid rgba(255,255,255,0.2);
-                }
+                #host-controls button { padding: 8px 15px; font-size: 0.8rem; border: 1px solid rgba(255,255,255,0.2); }
             `;
             pipWindow.document.head.appendChild(pipStyle);
 
             pipWindow.document.body.append(displayEl);
+
             if(isHost) {
-                // Ensure hidden class is removed before appending
                 hostControls.classList.remove('hidden');
                 pipWindow.document.body.append(hostControls);
+                
+                // CRITICAL FIX: BRIDGE BUTTONS TO MAIN WINDOW FUNCTIONS
+                // We must attach the main window's functions to the new window object
+                pipWindow.addTime = window.addTime;
+                pipWindow.resetTimer = window.resetTimer;
             }
 
             pipWindow.addEventListener('pagehide', () => {
