@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shared Timer (Verified Engine)</title>
+    <title>Shared Timer (Host Controls)</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -74,7 +74,9 @@
             color: white;
             font-size: 1rem;
             font-weight: 500;
+            transition: transform 0.1s, background 0.2s;
         }
+        button:active { transform: scale(0.96); }
         button:hover { background: #333; }
         button.primary { background: #00ff9d; color: #111; font-weight: 900; border: none; }
         button.icon-btn { padding: 12px; font-size: 1.2rem; }
@@ -151,7 +153,7 @@
     </div>
 
     <script>
-        // --- SECURE MQTT CONFIG (From your Working Code) ---
+        // --- SECURE CONFIG ---
         const BROKER = "broker.emqx.io";
         const PORT = 8084;
         let client = null, roomID = "", isHost = false;
@@ -167,6 +169,7 @@
         const displayEl = document.getElementById('time-display');
         const appWrapper = document.getElementById('app-wrapper');
         const uiContainer = document.getElementById('ui-container');
+        const hostControls = document.getElementById('host-controls');
 
         // --- 1. STARTUP ---
         const urlParams = new URLSearchParams(window.location.search);
@@ -177,7 +180,7 @@
             roomID = joinID;
             document.getElementById('setup-panel').classList.add('hidden');
             appWrapper.classList.remove('hidden');
-            document.getElementById('host-controls').remove();
+            hostControls.remove();
             document.getElementById('invite-link-box').innerText = "Viewer Mode";
             connectMQTT(roomID);
         }
@@ -186,22 +189,21 @@
             // HOST
             document.getElementById('loading-msg').classList.remove('hidden');
             isHost = true;
-            roomID = Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit ID
+            roomID = Math.floor(100000 + Math.random() * 900000).toString();
             
             connectMQTT(roomID, () => {
                 document.getElementById('setup-panel').classList.add('hidden');
                 appWrapper.classList.remove('hidden');
-                document.getElementById('host-controls').classList.remove('hidden');
+                hostControls.classList.remove('hidden');
                 document.getElementById('share-area').classList.remove('hidden');
                 
                 const link = `${window.location.origin}${window.location.pathname}?join=${roomID}`;
                 document.getElementById('invite-link-box').dataset.link = link;
-                
                 if(audioCtx.state === 'suspended') audioCtx.resume();
             });
         }
 
-        // --- 2. CONNECT (LOGIC COPIED FROM YOUR WORKING EXAMPLE) ---
+        // --- 2. CONNECT ---
         function connectMQTT(id, onSuccess) {
             const clientId = (isHost ? "host_" : "view_") + Math.random().toString(16).substr(2, 8);
             client = new Paho.MQTT.Client(BROKER, PORT, "/mqtt", clientId);
@@ -218,12 +220,10 @@
                 } catch(e) {}
             };
 
-            // EXACT options from your working code
             client.connect({
                 useSSL: true,
                 onSuccess: () => {
                     updateStatus(true, "Online");
-                    // Subscribe to this specific timer room
                     client.subscribe(`timerapp/${id}/state`);
                     if(onSuccess) onSuccess();
                 },
@@ -246,7 +246,6 @@
         function handleData(data) {
             if (data.targetTime !== undefined) {
                 targetTime = data.targetTime;
-                // Reset flags if time pushed to future
                 if (targetTime && targetTime > Date.now()) {
                     hasWarned = false; hasEnded = false;
                     applyColor(currentTheme.bg, currentTheme.text);
@@ -303,7 +302,6 @@
                 const m = Math.floor((diff % 3600000) / 60000);
                 const s = Math.floor((diff % 60000) / 1000);
                 displayEl.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-                
                 if (hasWarned) {
                     hasWarned = false;
                     applyColor(currentTheme.bg, currentTheme.text);
@@ -373,29 +371,53 @@
             }
         }
 
-        // --- 6. POP OUT ---
+        // --- 6. POP OUT WITH CONTROLS ---
         window.togglePiP = async () => {
-            if (!window.documentPictureInPicture) return alert("Use Chrome");
+            if (!window.documentPictureInPicture) return alert("Use Chrome/Edge");
             if (pipWindow) { pipWindow.close(); return; }
             pipWindow = await window.documentPictureInPicture.requestWindow({ width: 300, height: 150 });
             
             [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => 
                 pipWindow.document.head.appendChild(el.cloneNode(true)));
 
-            const currentBg = document.body.style.backgroundColor || currentTheme.bg;
-            pipWindow.document.body.style.backgroundColor = currentBg;
-            Object.assign(pipWindow.document.body.style, {
-                display: "flex", alignItems: "center", justifyContent: "center",
-                margin: "0", height: "100vh", overflow: "hidden", 
-                transition: "background-color 0.5s ease"
-            });
+            // Inject PiP-Specific Styles for "Discreet Controls"
+            const pipStyle = pipWindow.document.createElement('style');
+            pipStyle.textContent = `
+                body {
+                    display: flex; flex-direction: column; align-items: center; justify-content: center;
+                    margin: 0; height: 100vh; overflow: hidden; transition: background 0.5s;
+                    background-color: ${currentTheme.bg};
+                }
+                #time-display { font-size: 40vh !important; }
+                /* Discreet Controls CSS */
+                #host-controls {
+                    position: fixed; bottom: 0; left: 0; width: 100%;
+                    display: flex; justify-content: center; gap: 10px;
+                    padding: 15px 0;
+                    background: linear-gradient(to top, rgba(0,0,0,0.9), transparent);
+                    opacity: 0; transition: opacity 0.3s ease;
+                }
+                body:hover #host-controls { opacity: 1; }
+                #host-controls button {
+                    padding: 8px 15px; font-size: 0.8rem;
+                    border: 1px solid rgba(255,255,255,0.2);
+                }
+            `;
+            pipWindow.document.head.appendChild(pipStyle);
 
+            // Move Elements
             pipWindow.document.body.append(displayEl);
-            displayEl.style.fontSize = "40vh"; 
+            if(isHost) pipWindow.document.body.append(hostControls);
 
             pipWindow.addEventListener('pagehide', () => {
+                // Restore elements to main window
                 displayEl.style.fontSize = "25vw";
                 appWrapper.insertBefore(displayEl, uiContainer);
+                if(isHost) {
+                    // Put controls back before share area
+                    const shareArea = document.getElementById('share-area');
+                    uiContainer.insertBefore(hostControls, shareArea);
+                }
                 pipWindow = null;
             });
         };
