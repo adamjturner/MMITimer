@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shared Timer (Host Controls)</title>
+    <title>Shared Timer v12 (Fixed PiP Controls)</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -371,7 +371,7 @@
             }
         }
 
-        // --- 6. POP OUT WITH CONTROLS ---
+        // --- 6. POP OUT WITH FIXED CONTROLS ---
         window.togglePiP = async () => {
             if (!window.documentPictureInPicture) return alert("Use Chrome/Edge");
             if (pipWindow) { pipWindow.close(); return; }
@@ -380,7 +380,7 @@
             [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => 
                 pipWindow.document.head.appendChild(el.cloneNode(true)));
 
-            // Inject PiP-Specific Styles for "Discreet Controls"
+            // FIXED CSS: FORCE VISIBILITY & Z-INDEX
             const pipStyle = pipWindow.document.createElement('style');
             pipStyle.textContent = `
                 body {
@@ -389,15 +389,19 @@
                     background-color: ${currentTheme.bg};
                 }
                 #time-display { font-size: 40vh !important; }
-                /* Discreet Controls CSS */
+                
                 #host-controls {
                     position: fixed; bottom: 0; left: 0; width: 100%;
-                    display: flex; justify-content: center; gap: 10px;
-                    padding: 15px 0;
-                    background: linear-gradient(to top, rgba(0,0,0,0.9), transparent);
-                    opacity: 0; transition: opacity 0.3s ease;
+                    display: flex !important; /* FORCE SHOW */
+                    justify-content: center; gap: 10px;
+                    padding: 20px;
+                    background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+                    opacity: 0.2; /* 20% visible by default (not invisible) */
+                    transition: opacity 0.2s;
+                    z-index: 9999; /* Ensure clickability */
                 }
-                body:hover #host-controls { opacity: 1; }
+                #host-controls:hover { opacity: 1; }
+                
                 #host-controls button {
                     padding: 8px 15px; font-size: 0.8rem;
                     border: 1px solid rgba(255,255,255,0.2);
@@ -405,16 +409,17 @@
             `;
             pipWindow.document.head.appendChild(pipStyle);
 
-            // Move Elements
             pipWindow.document.body.append(displayEl);
-            if(isHost) pipWindow.document.body.append(hostControls);
+            if(isHost) {
+                // Ensure hidden class is removed before appending
+                hostControls.classList.remove('hidden');
+                pipWindow.document.body.append(hostControls);
+            }
 
             pipWindow.addEventListener('pagehide', () => {
-                // Restore elements to main window
                 displayEl.style.fontSize = "25vw";
                 appWrapper.insertBefore(displayEl, uiContainer);
                 if(isHost) {
-                    // Put controls back before share area
                     const shareArea = document.getElementById('share-area');
                     uiContainer.insertBefore(hostControls, shareArea);
                 }
