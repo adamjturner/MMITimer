@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Timer v9 (HiveMQ + Debug)</title>
+    <title>Shared Timer (Secure MQTT)</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -35,6 +35,7 @@
             transition: background-color 0.5s ease;
         }
 
+        /* TIMER DISPLAY */
         #time-display {
             font-size: 25vw;
             line-height: 1;
@@ -48,6 +49,7 @@
             transition: color 0.3s ease;
         }
 
+        /* CONTROLS CONTAINER */
         #ui-container {
             margin-top: 20px;
             display: flex;
@@ -74,11 +76,14 @@
             color: white;
             font-size: 1rem;
             font-weight: 500;
+            transition: transform 0.1s;
         }
+        button:active { transform: scale(0.96); }
         button:hover { background: #333; }
         button.primary { background: #00ff9d; color: #111; font-weight: 900; border: none; }
         button.icon-btn { padding: 12px; font-size: 1.2rem; }
 
+        /* LINK BOX */
         #invite-link-box {
             background: #222;
             padding: 10px 20px;
@@ -87,8 +92,11 @@
             border-radius: 6px;
             cursor: pointer;
             font-size: 0.9rem;
+            max-width: 90vw;
+            word-break: break-all;
         }
 
+        /* THEMES */
         #settings-panel {
             margin-top: 10px;
             padding: 15px;
@@ -104,29 +112,18 @@
             cursor: pointer;
             border: 2px solid #555;
         }
-        
-        /* DEBUG LOG STYLES */
-        #debug-log {
-            position: fixed;
-            bottom: 5px;
-            left: 5px;
-            color: #555;
-            font-size: 0.7rem;
-            font-family: monospace;
-            max-width: 90%;
-            pointer-events: none;
-        }
     </style>
 </head>
 <body>
 
     <div id="setup-panel">
         <h1 style="color:var(--text-color); margin-bottom: 30px; font-weight:900;">Shared Timer</h1>
-        <button class="primary" onclick="initializeHost()">Start New Timer (Host)</button>
-        <p id="loading-msg" class="hidden" style="color:#888; margin-top:20px;">Connecting to HiveMQ Cloud...</p>
+        <button class="primary" onclick="initializeHost()">Start as Host</button>
+        <p id="loading-msg" class="hidden" style="color:#888; margin-top:20px;">Establishing secure connection...</p>
     </div>
 
     <div id="app-wrapper" class="hidden" style="display:flex; flex-direction:column; alignItems:center; width:100%;">
+        
         <div id="time-display">00:00</div>
 
         <div id="ui-container">
@@ -152,168 +149,168 @@
 
             <div id="share-area" class="hidden" style="text-align:center; margin-top:15px;">
                 <div id="invite-link-box" onclick="copyLink()">📋 Click to Copy Invite Link</div>
+                <div style="display:flex; align-items:center; justify-content:center; gap:5px; margin-top:10px;">
+                    <div id="conn-dot" style="width:8px; height:8px; background:gray; border-radius:50%;"></div>
+                    <span id="status-msg" style="color:#666; font-size:0.8rem;">Connecting...</span>
+                </div>
             </div>
         </div>
     </div>
-    
-    <div id="debug-log">Status: Idle</div>
 
     <script>
-        // --- BROKER SWITCHED TO HIVEMQ ---
-        const MQTT_BROKER = "broker.hivemq.com";
-        const MQTT_PORT = 8884; // Alternate Secure Port
+        // --- CONFIGURATION (The one that works!) ---
+        const MQTT_BROKER = "broker.emqx.io";
+        const MQTT_PORT = 8084; // Secure WSS Port
         const MQTT_PATH = "/mqtt";
-        
-        // --- VARIABLES ---
-        let client;
-        let roomID;
-        let targetTime = null;
-        let isHost = false;
-        let pipWindow = null;
-        let soundEnabled = true;
-        let hasWarned = false, hasEnded = false;
-        
-        const displayEl = document.getElementById('time-display');
-        const uiContainer = document.getElementById('ui-container');
-        const appWrapper = document.getElementById('app-wrapper');
-        const debugEl = document.getElementById('debug-log');
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        const audioCtx = new AudioContext();
 
-        // Themes
-        const themes = {
+        // --- VARIABLES ---
+        let client = null;
+        let roomID = "";
+        let isHost = false;
+        let targetTime = null;
+        
+        // Anti-Crash & Audio
+        let wakeLock = null;
+        let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let soundEnabled = true;
+
+        // Visual States
+        let hasWarned = false, hasEnded = false;
+        let pipWindow = null;
+        let themes = {
             neon: { bg: '#000000', text: '#00ff9d' },
             light: { bg: '#ffffff', text: '#000000' },
             blue: { bg: '#001f3f', text: '#7FDBFF' }
         };
         let currentTheme = themes.neon;
 
-        function log(msg) {
-            console.log(msg);
-            debugEl.innerText = "Log: " + msg;
-        }
+        // DOM Elements
+        const displayEl = document.getElementById('time-display');
+        const appWrapper = document.getElementById('app-wrapper');
+        const uiContainer = document.getElementById('ui-container');
 
-        // --- INIT ---
+        // --- 1. INITIALIZATION ---
         const urlParams = new URLSearchParams(window.location.search);
         const joinID = urlParams.get('join');
 
         if (joinID) {
-            // VIEWER
+            // VIEWER MODE
             roomID = joinID;
             document.getElementById('setup-panel').classList.add('hidden');
             appWrapper.classList.remove('hidden');
-            document.getElementById('host-controls').remove();
-            document.getElementById('invite-link-box').innerText = "Viewer Mode: " + roomID;
+            document.getElementById('host-controls').remove(); // Remove admin buttons
+            document.getElementById('invite-link-box').innerText = "Connected as Viewer";
             connectMQTT();
         }
 
-        function initializeHost() {
-            // HOST
+        async function initializeHost() {
+            // HOST MODE
             document.getElementById('loading-msg').classList.remove('hidden');
             isHost = true;
+            
+            // 1. Generate Room ID
             roomID = "tmr_" + Math.random().toString(36).substr(2, 6);
+            
+            // 2. Prevent Screen Sleep (Anti-Crash)
+            try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch(e){}
+
+            // 3. Connect
             connectMQTT(() => {
                 document.getElementById('setup-panel').classList.add('hidden');
                 appWrapper.classList.remove('hidden');
                 document.getElementById('host-controls').classList.remove('hidden');
                 document.getElementById('share-area').classList.remove('hidden');
+                
                 const link = `${window.location.origin}${window.location.pathname}?join=${roomID}`;
                 document.getElementById('invite-link-box').dataset.link = link;
+                
+                // Unlock Audio
                 if(audioCtx.state === 'suspended') audioCtx.resume();
             });
         }
 
-        // --- MQTT LOGIC ---
-        function connectMQTT(onSuccessCallback) {
-            log(`Connecting to ${MQTT_BROKER}:${MQTT_PORT}...`);
-            const clientId = "usr_" + Math.random().toString(36).substr(2, 9);
-            
-            try {
-                client = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, MQTT_PATH, clientId);
-            } catch (e) {
-                log("Client Init Error: " + e.message);
-                return;
-            }
+        // --- 2. SECURE NETWORK LOGIC (The Logic from OSCE) ---
+        function connectMQTT(onSuccess) {
+            const clientId = (isHost ? "host_" : "view_") + Math.random().toString(16).substr(2, 8);
+            client = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, MQTT_PATH, clientId);
 
             client.onConnectionLost = (responseObject) => {
-                log("Connection Lost: " + responseObject.errorMessage);
-                // Auto Retry
-                setTimeout(() => connectMQTT(onSuccessCallback), 5000);
+                updateStatus(false, "Reconnecting...");
+                setTimeout(() => connectMQTT(onSuccess), 2500);
             };
 
             client.onMessageArrived = (message) => {
                 try {
                     const data = JSON.parse(message.payloadString);
                     handleData(data);
-                } catch (e) { log("Data Parse Error"); }
+                } catch (e) { console.error(e); }
             };
 
-            const connectOptions = {
+            // CONNECT WITH SSL (Bypasses Firewall)
+            client.connect({
                 useSSL: true,
                 timeout: 5,
                 keepAliveInterval: 30,
                 onSuccess: () => {
-                    log("Connected! Subscribing to " + roomID);
-                    client.subscribe(roomID);
-                    if (onSuccessCallback) onSuccessCallback();
+                    updateStatus(true, "Securely Connected");
+                    client.subscribe(`timerapp/${roomID}/state`);
+                    if (onSuccess) onSuccess();
                 },
-                onFailure: (message) => {
-                    log("Connect Failed: " + message.errorMessage + ". Retrying...");
-                    // Retry
-                    setTimeout(() => connectMQTT(onSuccessCallback), 5000);
+                onFailure: (e) => {
+                    updateStatus(false, "Connection Failed");
+                    setTimeout(() => connectMQTT(onSuccess), 5000);
                 }
+            });
+        }
+
+        function publishState() {
+            if (!isHost || !client || !client.isConnected()) return;
+            
+            const payload = {
+                targetTime: targetTime
             };
 
-            try {
-                client.connect(connectOptions);
-            } catch (e) {
-                log("Connect Error: " + e.message);
-            }
+            const message = new Paho.MQTT.Message(JSON.stringify(payload));
+            message.destinationName = `timerapp/${roomID}/state`;
+            message.retained = true; // Crucial: New viewers get time instantly
+            client.send(message);
         }
 
-        // --- TIMER LOGIC ---
+        // --- 3. TIMER LOGIC ---
         function handleData(data) {
-            if (data.targetTime !== undefined) {
+            // Only update targetTime if it changes
+            if (data.targetTime !== targetTime) {
                 targetTime = data.targetTime;
-                if (targetTime - Date.now() > 60000) hasWarned = false;
-                if (targetTime - Date.now() > 0) hasEnded = false;
+                // If adding time, reset flags
+                if (targetTime && targetTime > Date.now()) {
+                    hasWarned = false; hasEnded = false;
+                    applyColor(currentTheme.bg, currentTheme.text);
+                }
+                updateDisplay();
             }
-            if (data.reset) {
-                targetTime = null;
-                hasWarned = false; hasEnded = false;
-                applyColor(currentTheme.bg, currentTheme.text);
-            }
-            updateDisplay();
         }
 
-        function addTime(m) {
+        function addTime(minutes) {
             if (!isHost) return;
             if(audioCtx.state === 'suspended') audioCtx.resume();
+
             const now = Date.now();
+            // Start from existing target if running, else start from now
             const basis = (targetTime && targetTime > now) ? targetTime : now;
-            targetTime = basis + (m * 60000);
+            targetTime = basis + (minutes * 60 * 1000);
+            
             hasWarned = false; hasEnded = false;
-            publish({ targetTime: targetTime });
+            publishState();
             updateDisplay();
         }
 
         function resetTimer() {
             if (!isHost) return;
             targetTime = null;
-            publish({ reset: true });
+            hasWarned = false; hasEnded = false;
             applyColor(currentTheme.bg, currentTheme.text);
+            publishState();
             updateDisplay();
-        }
-
-        function publish(data) {
-            if (!client || !client.isConnected()) {
-                log("Cannot send: Not connected");
-                return;
-            }
-            const message = new Paho.MQTT.Message(JSON.stringify(data));
-            message.destinationName = roomID;
-            message.retained = true;
-            client.send(message);
         }
 
         function updateDisplay() {
@@ -321,93 +318,132 @@
                 displayEl.innerText = "00:00";
                 return;
             }
-            const diff = targetTime - Date.now();
+
+            const now = Date.now();
+            const diff = targetTime - now;
 
             if (diff <= 0) {
+                // FINISHED
                 displayEl.innerText = "00:00";
                 if (!hasEnded) {
                     hasEnded = true;
-                    applyColor('var(--end-bg)', 'var(--end-text)');
+                    applyColor('var(--end-bg)', 'var(--end-text)'); // RED
                     playSound('alarm');
                 }
             } else if (diff <= 60000) {
+                // WARNING (< 1 MIN)
                 const m = Math.floor((diff % 3600000) / 60000);
                 const s = Math.floor((diff % 60000) / 1000);
                 displayEl.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                
                 if (!hasWarned) {
                     hasWarned = true;
-                    applyColor('var(--warn-bg)', 'var(--warn-text)');
+                    applyColor('var(--warn-bg)', 'var(--warn-text)'); // ORANGE
                     playSound('beep');
                 }
             } else {
+                // NORMAL
                 const m = Math.floor((diff % 3600000) / 60000);
                 const s = Math.floor((diff % 60000) / 1000);
                 displayEl.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                
+                // Revert color if we added time
                 if (hasWarned) {
                     hasWarned = false;
                     applyColor(currentTheme.bg, currentTheme.text);
                 }
             }
         }
+        
+        // High-speed update loop for smoothness
         setInterval(updateDisplay, 50);
 
-        // --- UTILS ---
-        window.toggleSettings = () => document.getElementById('settings-panel').classList.toggle('hidden');
-        window.toggleSound = () => {
-            soundEnabled = !soundEnabled;
-            document.getElementById('sound-btn').innerText = soundEnabled ? "🔊" : "🔇";
-            if (soundEnabled && audioCtx.state === 'suspended') audioCtx.resume();
-        };
-        window.setTheme = (name) => {
-            currentTheme = themes[name];
-            if (!hasWarned && !hasEnded) applyColor(currentTheme.bg, currentTheme.text);
-        };
+        // --- 4. UTILS & UI ---
+        function updateStatus(connected, text) {
+            const dot = document.getElementById('conn-dot');
+            const msg = document.getElementById('status-msg');
+            msg.innerText = text;
+            dot.style.background = connected ? '#00ff9d' : '#ff4444';
+            dot.style.boxShadow = connected ? '0 0 5px #00ff9d' : 'none';
+        }
+
         function applyColor(bg, text) {
             document.body.style.backgroundColor = bg;
             displayEl.style.color = text;
             if (pipWindow) pipWindow.document.body.style.backgroundColor = bg;
         }
-        function copyLink() {
-            navigator.clipboard.writeText(document.getElementById('invite-link-box').dataset.link);
-            alert("Link copied!");
-        }
 
+        window.setTheme = (name) => {
+            currentTheme = themes[name];
+            if (!hasWarned && !hasEnded) applyColor(currentTheme.bg, currentTheme.text);
+        };
+
+        window.toggleSettings = () => document.getElementById('settings-panel').classList.toggle('hidden');
+
+        window.toggleSound = () => {
+            soundEnabled = !soundEnabled;
+            document.getElementById('sound-btn').innerText = soundEnabled ? "🔊" : "🔇";
+            if (soundEnabled && audioCtx.state === 'suspended') audioCtx.resume();
+        };
+
+        window.copyLink = () => {
+            const link = document.getElementById('invite-link-box').dataset.link;
+            if(link) { navigator.clipboard.writeText(link); alert("Link copied!"); }
+        };
+
+        // --- 5. AUDIO ENGINE ---
         function playSound(type) {
             if (!soundEnabled) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
             const osc = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
-            osc.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
             const now = audioCtx.currentTime;
 
             if (type === 'beep') {
                 osc.type = 'sine'; osc.frequency.setValueAtTime(800, now);
-                gainNode.gain.setValueAtTime(0.1, now); gainNode.gain.setValueAtTime(0, now+0.1);
-                gainNode.gain.setValueAtTime(0.1, now+0.2); gainNode.gain.setValueAtTime(0, now+0.3);
-                osc.start(now); osc.stop(now+0.4);
+                gain.gain.setValueAtTime(0.1, now); 
+                gain.gain.setValueAtTime(0, now + 0.1); // blip
+                gain.gain.setValueAtTime(0.1, now + 0.2); 
+                gain.gain.setValueAtTime(0, now + 0.3); // blip
+                osc.start(now); osc.stop(now + 0.4);
             } else if (type === 'alarm') {
                 osc.type = 'square'; osc.frequency.setValueAtTime(600, now);
-                gainNode.gain.setValueAtTime(0.1, now); gainNode.gain.setValueAtTime(0, now+0.2);
-                gainNode.gain.setValueAtTime(0.1, now+0.3); gainNode.gain.setValueAtTime(0, now+0.5);
-                gainNode.gain.setValueAtTime(0.1, now+0.6); gainNode.gain.linearRampToValueAtTime(0, now+1.2);
-                osc.start(now); osc.stop(now+1.2);
+                gain.gain.setValueAtTime(0.1, now); 
+                gain.gain.setValueAtTime(0, now + 0.2);
+                gain.gain.setValueAtTime(0.1, now + 0.3); 
+                gain.gain.setValueAtTime(0, now + 0.5);
+                gain.gain.linearRampToValueAtTime(0, now + 1.2);
+                osc.start(now); osc.stop(now + 1.2);
             }
         }
 
-        // --- PiP ---
+        // --- 6. POP OUT (PiP) ---
         window.togglePiP = async () => {
-            if (!('documentPictureInPicture' in window)) return alert("Use Chrome/Edge 116+");
+            if (!('documentPictureInPicture' in window)) return alert("Use Chrome/Edge");
             if (pipWindow) { pipWindow.close(); return; }
+
             pipWindow = await window.documentPictureInPicture.requestWindow({ width: 300, height: 150 });
-            [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => pipWindow.document.head.appendChild(el.cloneNode(true)));
+            
+            // Clone Styles
+            [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => {
+                pipWindow.document.head.appendChild(el.cloneNode(true));
+            });
+
             const currentBg = document.body.style.backgroundColor || currentTheme.bg;
             pipWindow.document.body.style.backgroundColor = currentBg;
             Object.assign(pipWindow.document.body.style, {
                 display: "flex", alignItems: "center", justifyContent: "center",
-                margin: "0", height: "100vh", overflow: "hidden", transition: "background-color 0.5s ease"
+                margin: "0", height: "100vh", overflow: "hidden", 
+                transition: "background-color 0.5s ease"
             });
+
             pipWindow.document.body.append(displayEl);
             displayEl.style.fontSize = "40vh"; 
+
             pipWindow.addEventListener('pagehide', () => {
                 displayEl.style.fontSize = "25vw";
                 appWrapper.insertBefore(displayEl, uiContainer);
