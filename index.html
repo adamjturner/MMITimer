@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure MQTT Timer (v8)</title>
+    <title>Timer v9 (HiveMQ + Debug)</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -104,6 +104,18 @@
             cursor: pointer;
             border: 2px solid #555;
         }
+        
+        /* DEBUG LOG STYLES */
+        #debug-log {
+            position: fixed;
+            bottom: 5px;
+            left: 5px;
+            color: #555;
+            font-size: 0.7rem;
+            font-family: monospace;
+            max-width: 90%;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
@@ -111,7 +123,7 @@
     <div id="setup-panel">
         <h1 style="color:var(--text-color); margin-bottom: 30px; font-weight:900;">Shared Timer</h1>
         <button class="primary" onclick="initializeHost()">Start New Timer (Host)</button>
-        <p id="loading-msg" class="hidden" style="color:#888; margin-top:20px;">Connecting to secure cloud...</p>
+        <p id="loading-msg" class="hidden" style="color:#888; margin-top:20px;">Connecting to HiveMQ Cloud...</p>
     </div>
 
     <div id="app-wrapper" class="hidden" style="display:flex; flex-direction:column; alignItems:center; width:100%;">
@@ -140,15 +152,16 @@
 
             <div id="share-area" class="hidden" style="text-align:center; margin-top:15px;">
                 <div id="invite-link-box" onclick="copyLink()">📋 Click to Copy Invite Link</div>
-                <p id="status-msg" style="color: #666; font-size: 0.8rem; margin-top: 10px;">Connected Securely (WSS)</p>
             </div>
         </div>
     </div>
+    
+    <div id="debug-log">Status: Idle</div>
 
     <script>
-        // --- MQTT CONFIGURATION ---
-        const MQTT_BROKER = "broker.emqx.io";
-        const MQTT_PORT = 8084; // Secure WebSocket Port (Firewall Friendly)
+        // --- BROKER SWITCHED TO HIVEMQ ---
+        const MQTT_BROKER = "broker.hivemq.com";
+        const MQTT_PORT = 8884; // Alternate Secure Port
         const MQTT_PATH = "/mqtt";
         
         // --- VARIABLES ---
@@ -163,6 +176,7 @@
         const displayEl = document.getElementById('time-display');
         const uiContainer = document.getElementById('ui-container');
         const appWrapper = document.getElementById('app-wrapper');
+        const debugEl = document.getElementById('debug-log');
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         const audioCtx = new AudioContext();
 
@@ -174,80 +188,93 @@
         };
         let currentTheme = themes.neon;
 
+        function log(msg) {
+            console.log(msg);
+            debugEl.innerText = "Log: " + msg;
+        }
+
         // --- INIT ---
         const urlParams = new URLSearchParams(window.location.search);
         const joinID = urlParams.get('join');
 
         if (joinID) {
-            // VIEWER MODE
+            // VIEWER
             roomID = joinID;
             document.getElementById('setup-panel').classList.add('hidden');
             appWrapper.classList.remove('hidden');
-            document.getElementById('host-controls').remove(); // Remove admin buttons
-            document.getElementById('invite-link-box').innerText = "Viewer Mode";
+            document.getElementById('host-controls').remove();
+            document.getElementById('invite-link-box').innerText = "Viewer Mode: " + roomID;
             connectMQTT();
         }
 
         function initializeHost() {
-            // HOST MODE
+            // HOST
             document.getElementById('loading-msg').classList.remove('hidden');
             isHost = true;
-            // Generate random room ID
-            roomID = "timer_" + Math.random().toString(36).substr(2, 9);
-            
+            roomID = "tmr_" + Math.random().toString(36).substr(2, 6);
             connectMQTT(() => {
                 document.getElementById('setup-panel').classList.add('hidden');
                 appWrapper.classList.remove('hidden');
                 document.getElementById('host-controls').classList.remove('hidden');
                 document.getElementById('share-area').classList.remove('hidden');
-                
                 const link = `${window.location.origin}${window.location.pathname}?join=${roomID}`;
                 document.getElementById('invite-link-box').dataset.link = link;
-                
                 if(audioCtx.state === 'suspended') audioCtx.resume();
             });
         }
 
-        // --- MQTT CONNECTION ---
+        // --- MQTT LOGIC ---
         function connectMQTT(onSuccessCallback) {
-            const clientId = "client_" + Math.random().toString(36).substr(2, 9);
-            client = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, MQTT_PATH, clientId);
+            log(`Connecting to ${MQTT_BROKER}:${MQTT_PORT}...`);
+            const clientId = "usr_" + Math.random().toString(36).substr(2, 9);
+            
+            try {
+                client = new Paho.MQTT.Client(MQTT_BROKER, MQTT_PORT, MQTT_PATH, clientId);
+            } catch (e) {
+                log("Client Init Error: " + e.message);
+                return;
+            }
 
             client.onConnectionLost = (responseObject) => {
-                document.getElementById('status-msg').innerText = "Connection Lost. Reconnecting...";
-                setTimeout(() => connectMQTT(), 5000);
+                log("Connection Lost: " + responseObject.errorMessage);
+                // Auto Retry
+                setTimeout(() => connectMQTT(onSuccessCallback), 5000);
             };
 
             client.onMessageArrived = (message) => {
                 try {
                     const data = JSON.parse(message.payloadString);
                     handleData(data);
-                } catch (e) { console.log("Data error", e); }
+                } catch (e) { log("Data Parse Error"); }
             };
 
             const connectOptions = {
-                useSSL: true, // CRITICAL: This bypasses the firewall
-                timeout: 3,
+                useSSL: true,
+                timeout: 5,
+                keepAliveInterval: 30,
                 onSuccess: () => {
-                    document.getElementById('status-msg').innerText = "Connected Securely";
-                    // Subscribe to the specific room topic
+                    log("Connected! Subscribing to " + roomID);
                     client.subscribe(roomID);
                     if (onSuccessCallback) onSuccessCallback();
                 },
                 onFailure: (message) => {
-                    document.getElementById('status-msg').innerText = "Connection Failed. Retrying...";
+                    log("Connect Failed: " + message.errorMessage + ". Retrying...");
+                    // Retry
                     setTimeout(() => connectMQTT(onSuccessCallback), 5000);
                 }
             };
 
-            client.connect(connectOptions);
+            try {
+                client.connect(connectOptions);
+            } catch (e) {
+                log("Connect Error: " + e.message);
+            }
         }
 
         // --- TIMER LOGIC ---
         function handleData(data) {
             if (data.targetTime !== undefined) {
                 targetTime = data.targetTime;
-                // If adding time, reset warnings
                 if (targetTime - Date.now() > 60000) hasWarned = false;
                 if (targetTime - Date.now() > 0) hasEnded = false;
             }
@@ -262,11 +289,9 @@
         function addTime(m) {
             if (!isHost) return;
             if(audioCtx.state === 'suspended') audioCtx.resume();
-
             const now = Date.now();
             const basis = (targetTime && targetTime > now) ? targetTime : now;
             targetTime = basis + (m * 60000);
-            
             hasWarned = false; hasEnded = false;
             publish({ targetTime: targetTime });
             updateDisplay();
@@ -281,10 +306,13 @@
         }
 
         function publish(data) {
-            if (!client || !client.isConnected()) return;
+            if (!client || !client.isConnected()) {
+                log("Cannot send: Not connected");
+                return;
+            }
             const message = new Paho.MQTT.Message(JSON.stringify(data));
             message.destinationName = roomID;
-            message.retained = true; // CRITICAL: New viewers get the time instantly
+            message.retained = true;
             client.send(message);
         }
 
@@ -324,33 +352,26 @@
         setInterval(updateDisplay, 50);
 
         // --- UTILS ---
-        window.toggleSettings = () => {
-            document.getElementById('settings-panel').classList.toggle('hidden');
-        };
-
+        window.toggleSettings = () => document.getElementById('settings-panel').classList.toggle('hidden');
         window.toggleSound = () => {
             soundEnabled = !soundEnabled;
             document.getElementById('sound-btn').innerText = soundEnabled ? "🔊" : "🔇";
             if (soundEnabled && audioCtx.state === 'suspended') audioCtx.resume();
         };
-
         window.setTheme = (name) => {
             currentTheme = themes[name];
             if (!hasWarned && !hasEnded) applyColor(currentTheme.bg, currentTheme.text);
         };
-
         function applyColor(bg, text) {
             document.body.style.backgroundColor = bg;
             displayEl.style.color = text;
             if (pipWindow) pipWindow.document.body.style.backgroundColor = bg;
         }
-
         function copyLink() {
             navigator.clipboard.writeText(document.getElementById('invite-link-box').dataset.link);
             alert("Link copied!");
         }
 
-        // --- SOUND ENGINE ---
         function playSound(type) {
             if (!soundEnabled) return;
             const osc = audioCtx.createOscillator();
@@ -360,51 +381,33 @@
             const now = audioCtx.currentTime;
 
             if (type === 'beep') {
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(800, now);
-                gainNode.gain.setValueAtTime(0.1, now);
-                gainNode.gain.setValueAtTime(0, now + 0.1);
-                gainNode.gain.setValueAtTime(0.1, now + 0.2);
-                gainNode.gain.setValueAtTime(0, now + 0.3);
-                osc.start(now);
-                osc.stop(now + 0.4);
+                osc.type = 'sine'; osc.frequency.setValueAtTime(800, now);
+                gainNode.gain.setValueAtTime(0.1, now); gainNode.gain.setValueAtTime(0, now+0.1);
+                gainNode.gain.setValueAtTime(0.1, now+0.2); gainNode.gain.setValueAtTime(0, now+0.3);
+                osc.start(now); osc.stop(now+0.4);
             } else if (type === 'alarm') {
-                osc.type = 'square'; 
-                osc.frequency.setValueAtTime(600, now); 
-                gainNode.gain.setValueAtTime(0.1, now);
-                gainNode.gain.setValueAtTime(0, now + 0.2);
-                gainNode.gain.setValueAtTime(0.1, now + 0.3);
-                gainNode.gain.setValueAtTime(0, now + 0.5);
-                gainNode.gain.setValueAtTime(0.1, now + 0.6);
-                gainNode.gain.linearRampToValueAtTime(0, now + 1.2); 
-                osc.start(now);
-                osc.stop(now + 1.2);
+                osc.type = 'square'; osc.frequency.setValueAtTime(600, now);
+                gainNode.gain.setValueAtTime(0.1, now); gainNode.gain.setValueAtTime(0, now+0.2);
+                gainNode.gain.setValueAtTime(0.1, now+0.3); gainNode.gain.setValueAtTime(0, now+0.5);
+                gainNode.gain.setValueAtTime(0.1, now+0.6); gainNode.gain.linearRampToValueAtTime(0, now+1.2);
+                osc.start(now); osc.stop(now+1.2);
             }
         }
 
-        // --- POP OUT (PiP) ---
+        // --- PiP ---
         window.togglePiP = async () => {
             if (!('documentPictureInPicture' in window)) return alert("Use Chrome/Edge 116+");
             if (pipWindow) { pipWindow.close(); return; }
-
             pipWindow = await window.documentPictureInPicture.requestWindow({ width: 300, height: 150 });
-
-            // Copy styles & fonts
-            [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => {
-                pipWindow.document.head.appendChild(el.cloneNode(true));
-            });
-
+            [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => pipWindow.document.head.appendChild(el.cloneNode(true)));
             const currentBg = document.body.style.backgroundColor || currentTheme.bg;
             pipWindow.document.body.style.backgroundColor = currentBg;
             Object.assign(pipWindow.document.body.style, {
                 display: "flex", alignItems: "center", justifyContent: "center",
-                margin: "0", height: "100vh", overflow: "hidden",
-                transition: "background-color 0.5s ease"
+                margin: "0", height: "100vh", overflow: "hidden", transition: "background-color 0.5s ease"
             });
-
             pipWindow.document.body.append(displayEl);
             displayEl.style.fontSize = "40vh"; 
-
             pipWindow.addEventListener('pagehide', () => {
                 displayEl.style.fontSize = "25vw";
                 appWrapper.insertBefore(displayEl, uiContainer);
