@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Shared Timer v5</title>
+    <title>P2P Shared Timer v6</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -170,41 +170,83 @@
         };
         let currentTheme = themes.neon;
 
+        // --- CONFIG ---
+        // Enhanced config to punch through firewalls
+        const peerConfig = {
+            debug: 2,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' }
+                ]
+            }
+        };
+
         // --- INIT ---
         const urlParams = new URLSearchParams(window.location.search);
         const hostIdToJoin = urlParams.get('join');
 
         if (hostIdToJoin) {
+            // VIEWER
             document.getElementById('setup-panel').classList.add('hidden');
             appWrapper.classList.remove('hidden');
             document.getElementById('status-msg').innerText = "Connecting...";
             document.getElementById('host-controls').remove();
             
-            peer = new Peer();
+            // Use enhanced config
+            peer = new Peer(null, peerConfig);
+            
             peer.on('open', () => {
                 const conn = peer.connect(hostIdToJoin);
-                conn.on('open', () => document.getElementById('status-msg').innerText = "Connected");
+                
+                conn.on('open', () => {
+                    document.getElementById('status-msg').innerText = "Connected";
+                });
+                
                 conn.on('data', handleData);
+                
+                // Add error handling for connection
+                conn.on('error', (err) => {
+                    console.error(err);
+                    document.getElementById('status-msg').innerText = "Connection Failed. Refresh to try again.";
+                });
+            });
+            
+            peer.on('error', (err) => {
+               document.getElementById('status-msg').innerText = "Network Error: " + err.type;
             });
         }
 
         function initializeHost() {
+            // HOST
             document.getElementById('loading-msg').classList.remove('hidden');
-            peer = new Peer();
+            
+            // Use enhanced config
+            peer = new Peer(null, peerConfig);
+            
             peer.on('open', (id) => {
                 isHost = true;
                 document.getElementById('setup-panel').classList.add('hidden');
                 appWrapper.classList.remove('hidden');
                 document.getElementById('host-controls').classList.remove('hidden');
                 document.getElementById('share-area').classList.remove('hidden');
+                
                 const link = `${window.location.origin}${window.location.pathname}?join=${id}`;
                 document.getElementById('invite-link-box').dataset.link = link;
+                
                 if(audioCtx.state === 'suspended') audioCtx.resume();
             });
+
             peer.on('connection', (conn) => {
                 connections.push(conn);
                 document.getElementById('viewer-count').innerText = connections.length;
-                if (targetTime) conn.send({ targetTime });
+                
+                // Send immediate sync upon connection
+                if (targetTime) {
+                    conn.send({ targetTime });
+                }
             });
         }
 
@@ -256,7 +298,7 @@
                 if (!hasEnded) {
                     hasEnded = true;
                     applyColor('var(--end-bg)', 'var(--end-text)');
-                    playSound('alarm'); // Changed from 'buzzer'
+                    playSound('alarm');
                 }
             } else if (diff <= 60000) {
                 const m = Math.floor((diff % 3600000) / 60000);
@@ -305,10 +347,8 @@
             alert("Link copied!");
         }
 
-        // --- NEW SOUND ENGINE ---
         function playSound(type) {
             if (!soundEnabled) return;
-            
             const osc = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
             osc.connect(gainNode);
@@ -317,37 +357,23 @@
             const now = audioCtx.currentTime;
 
             if (type === 'beep') {
-                // High pitch single warning beep (1-minute mark)
                 osc.type = 'sine';
                 osc.frequency.setValueAtTime(800, now);
-                
-                // Quick double blip
                 gainNode.gain.setValueAtTime(0.1, now);
                 gainNode.gain.setValueAtTime(0, now + 0.1);
                 gainNode.gain.setValueAtTime(0.1, now + 0.2);
                 gainNode.gain.setValueAtTime(0, now + 0.3);
-                
                 osc.start(now);
                 osc.stop(now + 0.4);
-                
             } else if (type === 'alarm') {
-                // "Digital Alarm" (BEEP... BEEP... BEEEEEP)
-                // No sliding pitch = No fart sound
-                osc.type = 'square'; // Classic digital sound
+                osc.type = 'square'; 
                 osc.frequency.setValueAtTime(600, now); 
-
-                // Beep 1
                 gainNode.gain.setValueAtTime(0.1, now);
                 gainNode.gain.setValueAtTime(0, now + 0.2);
-                
-                // Beep 2
                 gainNode.gain.setValueAtTime(0.1, now + 0.3);
                 gainNode.gain.setValueAtTime(0, now + 0.5);
-                
-                // Beep 3 (Longer)
                 gainNode.gain.setValueAtTime(0.1, now + 0.6);
-                gainNode.gain.linearRampToValueAtTime(0, now + 1.2); // Fade out
-
+                gainNode.gain.linearRampToValueAtTime(0, now + 1.2); 
                 osc.start(now);
                 osc.stop(now + 1.2);
             }
@@ -366,17 +392,14 @@
                 width: 300, height: 150,
             });
 
-            // 1. Copy All Styles AND Font Links
             [...document.head.querySelectorAll('style, link[rel="stylesheet"]')]
                 .forEach(element => {
                     pipWindow.document.head.appendChild(element.cloneNode(true));
                 });
 
-            // 2. Set Background
             const currentBg = document.body.style.backgroundColor || currentTheme.bg;
             pipWindow.document.body.style.backgroundColor = currentBg;
             
-            // 3. Set Layout
             pipWindow.document.body.style.display = "flex";
             pipWindow.document.body.style.alignItems = "center";
             pipWindow.document.body.style.justifyContent = "center";
@@ -385,7 +408,6 @@
             pipWindow.document.body.style.overflow = "hidden";
             pipWindow.document.body.style.transition = "background-color 0.5s ease";
 
-            // 4. Move Timer
             pipWindow.document.body.append(displayEl);
             displayEl.style.fontSize = "40vh"; 
 
