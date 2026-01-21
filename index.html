@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shared Timer v13 (Fixed Buttons)</title>
+    <title>Shared Timer v14 (Fixed Layout)</title>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -46,6 +46,9 @@
             cursor: default;
             user-select: none;
             transition: color 0.3s ease;
+            
+            /* CRITICAL FIX: Allows clicks to pass through the text to buttons below */
+            pointer-events: none; 
         }
 
         #ui-container {
@@ -75,6 +78,7 @@
             font-size: 1rem;
             font-weight: 500;
             transition: transform 0.1s, background 0.2s;
+            pointer-events: auto; /* Re-enable clicks for buttons */
         }
         button:active { transform: scale(0.96); }
         button:hover { background: #333; }
@@ -176,7 +180,6 @@
         const joinID = urlParams.get('join');
 
         if (joinID) {
-            // VIEWER
             roomID = joinID;
             document.getElementById('setup-panel').classList.add('hidden');
             appWrapper.classList.remove('hidden');
@@ -186,7 +189,6 @@
         }
 
         function initHost() {
-            // HOST
             document.getElementById('loading-msg').classList.remove('hidden');
             isHost = true;
             roomID = Math.floor(100000 + Math.random() * 900000).toString();
@@ -235,7 +237,6 @@
         }
 
         // --- 3. DATA & FUNCTIONS ---
-        // We make these window functions explicitly so they can be called from anywhere
         window.publishState = function() {
             if(!isHost || !client || !client.isConnected()) return;
             const msg = new Paho.MQTT.Message(JSON.stringify({ targetTime }));
@@ -255,7 +256,6 @@
             }
         }
 
-        // CONTROL FUNCTIONS
         window.addTime = function(min) {
             if(!isHost) return;
             const now = Date.now();
@@ -293,6 +293,7 @@
                 const m = Math.floor((diff % 3600000) / 60000);
                 const s = Math.floor((diff % 60000) / 1000);
                 displayEl.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                
                 if (!hasWarned) {
                     hasWarned = true;
                     applyColor('var(--warn-bg)', 'var(--warn-text)');
@@ -355,8 +356,7 @@
             osc.connect(gain);
             gain.connect(audioCtx.destination);
             const now = audioCtx.currentTime;
-            
-            // Sounds...
+
             if (type === 'beep') {
                 osc.type = 'sine'; osc.frequency.setValueAtTime(800, now);
                 gain.gain.setValueAtTime(0.1, now); 
@@ -372,7 +372,7 @@
             }
         }
 
-        // --- 5. POP OUT (FIXED FOR BUTTONS) ---
+        // --- 5. POP OUT (FIXED LAYOUT) ---
         window.togglePiP = async () => {
             if (!window.documentPictureInPicture) return alert("Use Chrome/Edge");
             if (pipWindow) { pipWindow.close(); return; }
@@ -381,7 +381,7 @@
             [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => 
                 pipWindow.document.head.appendChild(el.cloneNode(true)));
 
-            // CSS for PiP
+            // FIXED CSS: COMPACT BUTTONS & CLICK-THROUGH
             const pipStyle = pipWindow.document.createElement('style');
             pipStyle.textContent = `
                 body {
@@ -389,15 +389,32 @@
                     margin: 0; height: 100vh; overflow: hidden; transition: background 0.5s;
                     background-color: ${currentTheme.bg};
                 }
-                #time-display { font-size: 40vh !important; }
+                #time-display { 
+                    font-size: 40vh !important;
+                    pointer-events: none; /* CRITICAL: Allows clicks to pass through numbers */
+                }
+                
                 #host-controls {
                     position: fixed; bottom: 0; left: 0; width: 100%;
-                    display: flex !important; justify-content: center; gap: 10px;
-                    padding: 20px; background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+                    box-sizing: border-box;
+                    display: flex !important;
+                    justify-content: space-evenly; /* Fit buttons nicely */
+                    padding: 10px 5px; /* Reduced padding */
+                    background: linear-gradient(to top, rgba(0,0,0,0.9), transparent);
                     opacity: 0.2; transition: opacity 0.2s; z-index: 9999;
                 }
                 #host-controls:hover { opacity: 1; }
-                #host-controls button { padding: 8px 15px; font-size: 0.8rem; border: 1px solid rgba(255,255,255,0.2); }
+                
+                /* COMPACT BUTTONS FOR PIP */
+                #host-controls button {
+                    pointer-events: auto; /* Re-enable clicks */
+                    padding: 5px 10px; /* Small padding */
+                    font-size: 0.75rem; /* Small font */
+                    min-width: 40px;
+                    border: 1px solid rgba(255,255,255,0.3);
+                    background: rgba(50,50,50,0.8);
+                }
+                #host-controls button:hover { background: #00ff9d; color: black; }
             `;
             pipWindow.document.head.appendChild(pipStyle);
 
@@ -407,8 +424,7 @@
                 hostControls.classList.remove('hidden');
                 pipWindow.document.body.append(hostControls);
                 
-                // CRITICAL FIX: BRIDGE BUTTONS TO MAIN WINDOW FUNCTIONS
-                // We must attach the main window's functions to the new window object
+                // Bridge Functions
                 pipWindow.addTime = window.addTime;
                 pipWindow.resetTimer = window.resetTimer;
             }
