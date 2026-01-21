@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Shared Timer v5</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;900&display=swap" rel="stylesheet">
+
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    
+    <style>
+        :root {
+            --bg-color: #000000;
+            --text-color: #00ff9d;
+            --warn-bg: #b34700;
+            --warn-text: #ffffff;
+            --end-bg: #cc0000;
+            --end-text: #ffffff;
+        }
+
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: var(--bg-color);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            transition: background-color 0.5s ease;
+        }
+
+        #time-display {
+            font-size: 25vw;
+            line-height: 1;
+            font-weight: 900; 
+            font-variant-numeric: tabular-nums;
+            color: var(--text-color);
+            text-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            cursor: default;
+            user-select: none;
+            transition: color 0.3s ease;
+        }
+
+        #ui-container {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            z-index: 10;
+            padding: 20px;
+            border-radius: 12px;
+            background: rgba(30,30,30, 0.8);
+            backdrop-filter: blur(5px);
+        }
+
+        .controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+        .hidden { display: none !important; }
+
+        button {
+            font-family: 'Roboto', sans-serif;
+            padding: 12px 20px;
+            cursor: pointer;
+            border: 1px solid #444;
+            border-radius: 8px;
+            background: #222;
+            color: white;
+            font-size: 1rem;
+            font-weight: 500;
+        }
+        button:hover { background: #333; }
+        button.primary { background: #00ff9d; color: #111; font-weight: 900; border: none; }
+        button.icon-btn { padding: 12px; font-size: 1.2rem; }
+
+        #invite-link-box {
+            background: #222;
+            padding: 10px 20px;
+            border: 1px dashed #555;
+            color: #ccc;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+
+        #settings-panel {
+            margin-top: 10px;
+            padding: 15px;
+            background: #333;
+            border-radius: 8px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .theme-dot {
+            width: 25px; height: 25px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid #555;
+        }
+        .theme-dot:hover { transform: scale(1.1); }
+    </style>
+</head>
+<body>
+
+    <div id="setup-panel">
+        <h1 style="color:var(--text-color); margin-bottom: 30px; font-weight:900;">Shared Timer</h1>
+        <button class="primary" onclick="initializeHost()">Start New Timer (Host)</button>
+        <p id="loading-msg" class="hidden" style="color:#888; margin-top:20px;">Creating room...</p>
+    </div>
+
+    <div id="app-wrapper" class="hidden" style="display:flex; flex-direction:column; alignItems:center; width:100%;">
+        <div id="time-display">00:00</div>
+
+        <div id="ui-container">
+            <div class="controls">
+                <button onclick="togglePiP()">📺 Pop Out</button>
+                <button class="icon-btn" onclick="toggleSettings()" title="Settings">🎨</button>
+                <button class="icon-btn" id="sound-btn" onclick="toggleSound()" title="Mute/Unmute">🔊</button>
+            </div>
+
+            <div id="settings-panel" class="hidden">
+                <span style="font-size:0.8rem; color:#aaa;">Theme:</span>
+                <div class="theme-dot" style="background:#000; border-color:#00ff9d" onclick="setTheme('neon')" title="Neon"></div>
+                <div class="theme-dot" style="background:#fff; border-color:#000" onclick="setTheme('light')" title="Light"></div>
+                <div class="theme-dot" style="background:#001f3f; border-color:#7FDBFF" onclick="setTheme('blue')" title="Blue"></div>
+            </div>
+
+            <div id="host-controls" class="controls hidden" style="margin-top:10px;">
+                <button onclick="addTime(1)">+1m</button>
+                <button onclick="addTime(5)">+5m</button>
+                <button onclick="addTime(10)">+10m</button>
+                <button class="primary" onclick="resetTimer()">Reset</button>
+            </div>
+
+            <div id="share-area" class="hidden" style="text-align:center; margin-top:15px;">
+                <div id="invite-link-box" onclick="copyLink()">📋 Click to Copy Invite Link</div>
+                <p style="color:#888; font-size: 0.8rem; margin-top:8px;">
+                    Viewers: <span id="viewer-count">0</span>
+                </p>
+            </div>
+            
+            <p id="status-msg" style="color: #666; font-size: 0.8rem; margin-top: 5px;"></p>
+        </div>
+    </div>
+
+    <script>
+        // --- VARIABLES ---
+        let peer, connections = [], targetTime = null, isHost = false, pipWindow = null;
+        let soundEnabled = true;
+        let hasWarned = false, hasEnded = false;
+        
+        const displayEl = document.getElementById('time-display');
+        const uiContainer = document.getElementById('ui-container');
+        const appWrapper = document.getElementById('app-wrapper');
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const audioCtx = new AudioContext();
+
+        // --- THEMES ---
+        const themes = {
+            neon: { bg: '#000000', text: '#00ff9d' },
+            light: { bg: '#ffffff', text: '#000000' },
+            blue: { bg: '#001f3f', text: '#7FDBFF' }
+        };
+        let currentTheme = themes.neon;
+
+        // --- INIT ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const hostIdToJoin = urlParams.get('join');
+
+        if (hostIdToJoin) {
+            document.getElementById('setup-panel').classList.add('hidden');
+            appWrapper.classList.remove('hidden');
+            document.getElementById('status-msg').innerText = "Connecting...";
+            document.getElementById('host-controls').remove();
+            
+            peer = new Peer();
+            peer.on('open', () => {
+                const conn = peer.connect(hostIdToJoin);
+                conn.on('open', () => document.getElementById('status-msg').innerText = "Connected");
+                conn.on('data', handleData);
+            });
+        }
+
+        function initializeHost() {
+            document.getElementById('loading-msg').classList.remove('hidden');
+            peer = new Peer();
+            peer.on('open', (id) => {
+                isHost = true;
+                document.getElementById('setup-panel').classList.add('hidden');
+                appWrapper.classList.remove('hidden');
+                document.getElementById('host-controls').classList.remove('hidden');
+                document.getElementById('share-area').classList.remove('hidden');
+                const link = `${window.location.origin}${window.location.pathname}?join=${id}`;
+                document.getElementById('invite-link-box').dataset.link = link;
+                if(audioCtx.state === 'suspended') audioCtx.resume();
+            });
+            peer.on('connection', (conn) => {
+                connections.push(conn);
+                document.getElementById('viewer-count').innerText = connections.length;
+                if (targetTime) conn.send({ targetTime });
+            });
+        }
+
+        // --- TIMER LOGIC ---
+        function handleData(data) {
+            if (data.targetTime !== undefined) {
+                targetTime = data.targetTime;
+                if (targetTime - Date.now() > 60000) hasWarned = false;
+                if (targetTime - Date.now() > 0) hasEnded = false;
+            }
+            if (data.reset) {
+                targetTime = null;
+                hasWarned = false; hasEnded = false;
+                applyColor(currentTheme.bg, currentTheme.text);
+            }
+            updateDisplay();
+        }
+
+        function addTime(m) {
+            if (!isHost) return;
+            const now = Date.now();
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            const basis = (targetTime && targetTime > now) ? targetTime : now;
+            targetTime = basis + (m * 60000);
+            hasWarned = false; hasEnded = false;
+            broadcast({ targetTime });
+            updateDisplay();
+        }
+
+        function resetTimer() {
+            if (!isHost) return;
+            targetTime = null;
+            broadcast({ reset: true });
+            applyColor(currentTheme.bg, currentTheme.text);
+            updateDisplay();
+        }
+
+        function broadcast(data) { connections.forEach(c => c.send(data)); }
+
+        function updateDisplay() {
+            if (!targetTime) {
+                displayEl.innerText = "00:00";
+                return;
+            }
+            const diff = targetTime - Date.now();
+
+            if (diff <= 0) {
+                displayEl.innerText = "00:00";
+                if (!hasEnded) {
+                    hasEnded = true;
+                    applyColor('var(--end-bg)', 'var(--end-text)');
+                    playSound('alarm'); // Changed from 'buzzer'
+                }
+            } else if (diff <= 60000) {
+                const m = Math.floor((diff % 3600000) / 60000);
+                const s = Math.floor((diff % 60000) / 1000);
+                displayEl.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                if (!hasWarned) {
+                    hasWarned = true;
+                    applyColor('var(--warn-bg)', 'var(--warn-text)');
+                    playSound('beep');
+                }
+            } else {
+                const m = Math.floor((diff % 3600000) / 60000);
+                const s = Math.floor((diff % 60000) / 1000);
+                displayEl.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                if (hasWarned) {
+                    hasWarned = false;
+                    applyColor(currentTheme.bg, currentTheme.text);
+                }
+            }
+        }
+        setInterval(updateDisplay, 50);
+
+        function applyColor(bg, text) {
+            document.body.style.backgroundColor = bg;
+            displayEl.style.color = text;
+            if (pipWindow) pipWindow.document.body.style.backgroundColor = bg;
+        }
+
+        function setTheme(name) {
+            currentTheme = themes[name];
+            if (!hasWarned && !hasEnded) applyColor(currentTheme.bg, currentTheme.text);
+        }
+
+        function toggleSettings() {
+            document.getElementById('settings-panel').classList.toggle('hidden');
+        }
+
+        function toggleSound() {
+            soundEnabled = !soundEnabled;
+            document.getElementById('sound-btn').innerText = soundEnabled ? "🔊" : "🔇";
+            if (soundEnabled && audioCtx.state === 'suspended') audioCtx.resume();
+        }
+
+        function copyLink() {
+            navigator.clipboard.writeText(document.getElementById('invite-link-box').dataset.link);
+            alert("Link copied!");
+        }
+
+        // --- NEW SOUND ENGINE ---
+        function playSound(type) {
+            if (!soundEnabled) return;
+            
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            const now = audioCtx.currentTime;
+
+            if (type === 'beep') {
+                // High pitch single warning beep (1-minute mark)
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(800, now);
+                
+                // Quick double blip
+                gainNode.gain.setValueAtTime(0.1, now);
+                gainNode.gain.setValueAtTime(0, now + 0.1);
+                gainNode.gain.setValueAtTime(0.1, now + 0.2);
+                gainNode.gain.setValueAtTime(0, now + 0.3);
+                
+                osc.start(now);
+                osc.stop(now + 0.4);
+                
+            } else if (type === 'alarm') {
+                // "Digital Alarm" (BEEP... BEEP... BEEEEEP)
+                // No sliding pitch = No fart sound
+                osc.type = 'square'; // Classic digital sound
+                osc.frequency.setValueAtTime(600, now); 
+
+                // Beep 1
+                gainNode.gain.setValueAtTime(0.1, now);
+                gainNode.gain.setValueAtTime(0, now + 0.2);
+                
+                // Beep 2
+                gainNode.gain.setValueAtTime(0.1, now + 0.3);
+                gainNode.gain.setValueAtTime(0, now + 0.5);
+                
+                // Beep 3 (Longer)
+                gainNode.gain.setValueAtTime(0.1, now + 0.6);
+                gainNode.gain.linearRampToValueAtTime(0, now + 1.2); // Fade out
+
+                osc.start(now);
+                osc.stop(now + 1.2);
+            }
+        }
+
+        // --- POP OUT LOGIC ---
+        async function togglePiP() {
+            if (!('documentPictureInPicture' in window)) return alert("Use Chrome/Edge 116+");
+
+            if (pipWindow) {
+                pipWindow.close();
+                return;
+            }
+
+            pipWindow = await window.documentPictureInPicture.requestWindow({
+                width: 300, height: 150,
+            });
+
+            // 1. Copy All Styles AND Font Links
+            [...document.head.querySelectorAll('style, link[rel="stylesheet"]')]
+                .forEach(element => {
+                    pipWindow.document.head.appendChild(element.cloneNode(true));
+                });
+
+            // 2. Set Background
+            const currentBg = document.body.style.backgroundColor || currentTheme.bg;
+            pipWindow.document.body.style.backgroundColor = currentBg;
+            
+            // 3. Set Layout
+            pipWindow.document.body.style.display = "flex";
+            pipWindow.document.body.style.alignItems = "center";
+            pipWindow.document.body.style.justifyContent = "center";
+            pipWindow.document.body.style.margin = "0";
+            pipWindow.document.body.style.height = "100vh";
+            pipWindow.document.body.style.overflow = "hidden";
+            pipWindow.document.body.style.transition = "background-color 0.5s ease";
+
+            // 4. Move Timer
+            pipWindow.document.body.append(displayEl);
+            displayEl.style.fontSize = "40vh"; 
+
+            pipWindow.addEventListener('pagehide', () => {
+                displayEl.style.fontSize = "25vw";
+                appWrapper.insertBefore(displayEl, uiContainer);
+                pipWindow = null;
+            });
+        }
+    </script>
+</body>
+</html>
